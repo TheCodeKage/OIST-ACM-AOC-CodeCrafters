@@ -21,6 +21,7 @@ from .schemas import CVETarget, EngineOutput
 
 from .cve_fetcher import fetch_cves_for_dependencies
 from .dependency_scanner import get_project_dependencies
+from .cve_locator import locate_vulnerable_function
 
 # Load environment variables
 load_dotenv()
@@ -234,7 +235,14 @@ def init_config(output_file: Path):
     is_flag=True,
     help="Print per-package OSV query results, to distinguish 'genuinely clean' from errors",
 )
-def fetch(target_app_root: Path, output: Path, include_no_cve: bool, verbose: bool):
+@click.option(
+    "--locate/--no-locate",
+    default=False,
+    help="Agentically try to fill in flagged_function/module/file by fetching each "
+         "CVE's reference pages (fix commits, advisories) and asking an LLM to "
+         "extract them. Requires GROQ_API_KEY. Adds network + LLM calls per CVE.",
+)
+def fetch(target_app_root: Path, output: Path, include_no_cve: bool, verbose: bool, locate: bool):
     """
     Scan the target project's dependencies and fetch known CVEs for them
     from OSV.dev, writing a draft CVE manifest.
@@ -277,13 +285,36 @@ def fetch(target_app_root: Path, output: Path, include_no_cve: bool, verbose: bo
             continue
         seen_ids.add(display_id)
 
+        flagged_function = "REPLACE_ME  # e.g. ClassName.method_name"
+        flagged_module = "REPLACE_ME  # e.g. app.services.module_name"
+        flagged_file = "REPLACE_ME  # e.g. app/services/module_name.py"
+        locate_note = ""
+
+        if locate and r.get("references"):
+            if verbose:
+                click.echo(f"  Locating {display_id} ({r['package']})...", err=True)
+            loc = locate_vulnerable_function(
+                cve_id=display_id,
+                package=r["package"],
+                version=r["version"],
+                advisory_summary=r["summary"],
+                references=r["references"],
+            )
+            if loc.confident and loc.flagged_module and loc.flagged_function:
+                flagged_module = loc.flagged_module
+                flagged_file = loc.flagged_file or flagged_file
+                flagged_function = loc.flagged_function
+                locate_note = f" [auto-located: {loc.reasoning}]"
+            elif verbose:
+                click.echo(f"    not confident: {loc.reasoning}", err=True)
+
         manifest.append({
             "cve_id": display_id,
-            "flagged_function": "REPLACE_ME  # e.g. ClassName.method_name",
-            "flagged_module": "REPLACE_ME  # e.g. app.services.module_name",
-            "flagged_file": "REPLACE_ME  # e.g. app/services/module_name.py",
+            "flagged_function": flagged_function,
+            "flagged_module": flagged_module,
+            "flagged_file": flagged_file,
             "entry_points": [],
-            "advisory_summary": f"[{r['package']}=={r['version']}] {r['summary']}",
+            "advisory_summary": f"[{r['package']}=={r['version']}] {r['summary']}{locate_note}",
             "function_signature": None,
             "driver_kind": "callable",
             "flask_app_import": None,
@@ -293,11 +324,15 @@ def fetch(target_app_root: Path, output: Path, include_no_cve: bool, verbose: bo
     with open(output, "w") as f:
         json.dump(manifest, f, indent=2)
 
+    auto_located = sum(1 for m in manifest if "REPLACE_ME" not in m["flagged_function"])
+    if locate:
+        click.echo(f"  {auto_located}/{len(manifest)} auto-located with high confidence")
+
     click.echo(f"\nWrote {len(manifest)} CVE entries to {output}")
     if manifest:
         click.echo(
-            "Edit each entry's flagged_function / flagged_module / flagged_file / "
-            "entry_points, then run:"
+            "Review flagged_function / flagged_module / flagged_file (especially any "
+            "still marked REPLACE_ME) and fill in entry_points, then run:"
         )
         click.echo(f"  praesidium run --cves {output}")
 

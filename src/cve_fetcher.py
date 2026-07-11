@@ -45,12 +45,16 @@ def fetch_cves_for_dependency(dep: Dependency, client: httpx.Client) -> list[dic
     for vuln in vulns:
         cve_id = _extract_cve_id(vuln)
         summary = (vuln.get("summary") or vuln.get("details") or "").strip()
+        references = [
+            ref.get("url") for ref in vuln.get("references", []) or [] if ref.get("url")
+        ]
         results.append({
             "cve_id": cve_id,
             "osv_id": vuln.get("id"),
-            "summary": summary  [:500],
+            "summary": summary[:500],
             "package": dep.name,
             "version": dep.version,
+            "references": references,
         })
     return results
 
