@@ -1,0 +1,26 @@
+[
+  {
+    "cve_id": "CVE-2023-12345",
+    "flagged_function": "UploadHandler.save_file",
+    "flagged_module": "app.services.upload",
+    "flagged_file": "app/services/upload.py",
+    "entry_points": [
+      "app.routes.upload_endpoint"
+    ],
+    "advisory_summary": "Path traversal vulnerability in file upload handler",
+    "function_signature": "def save_file(self, filename: str, contents: bytes)",
+    "driver_kind": "callable"
+  },
+  {
+    "cve_id": "CVE-2023-67890",
+    "flagged_function": "UploadHandler.save_file",
+    "flagged_module": "app.services.upload",
+    "flagged_file": "app/services/upload.py",
+    "entry_points": [
+      "app.routes.unrelated_endpoint"
+    ],
+    "advisory_summary": "Another vulnerability test case",
+    "function_signature": "def save_file(self, filename: str, contents: bytes)",
+    "driver_kind": "callable"
+  }
+]

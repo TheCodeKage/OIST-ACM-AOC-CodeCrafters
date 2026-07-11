@@ -1,0 +1,56 @@
+[project]
+name = "praesidium"
+version = "0.2.2"
+description = "Praesidium — dynamic CVE reachability confirmation engine"
+readme = "README.md"
+requires-python = ">=3.13"
+license = {text = "MIT"}
+authors = [
+    {name = "Naman Agrawal", email = "nam.agr96@gmail.com"}
+]
+keywords = ["cve", "security", "vulnerability", "reachability", "static-analysis"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Security",
+    "Topic :: Software Development :: Testing",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "langgraph>=0.2.0",
+    "groq>=0.13.0",
+    "pydantic>=2.9.0",
+    "python-dotenv>=1.0.1",
+    "click>=8.1.0",
+    "starlette>=1.3.1",
+    "httpx>=0.28.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/TheCodeKage/praesidium"
+Repository = "https://github.com/TheCodeKage/praesidium"
+Issues = "https://github.com/TheCodeKage/praesidium/issues"
+
+[project.scripts]
+praesidium = "src.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "flask>=3.0.0",
+]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = "."
