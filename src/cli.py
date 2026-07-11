@@ -16,6 +16,14 @@ from typing import Optional
 import click
 from dotenv import load_dotenv, set_key, find_dotenv
 
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+from rich.columns import Columns
+from rich.rule import Rule
+from rich import box
+
 from .pipeline import run_pipeline
 from .schemas import CVETarget, EngineOutput
 
@@ -26,9 +34,154 @@ from .cve_locator import locate_vulnerable_function
 # Load environment variables
 load_dotenv()
 
+console = Console()
+
+# ── Theme constants ───────────────────────────────────────────────────────────
+COLORS = {
+    "Confirmed-Reachable": "bold red",
+    "Static-Match-Only":   "bold yellow",
+    "Not-Reachable":       "bold green",
+}
+ICONS = {
+    "Confirmed-Reachable": "[red]✘ CRITICAL[/red]",
+    "Static-Match-Only":   "[yellow]⚠ WARNING[/yellow]",
+    "Not-Reachable":       "[green]✔ SAFE[/green]",
+}
+BORDER_STYLES = {
+    "Confirmed-Reachable": "red",
+    "Static-Match-Only":   "yellow",
+    "Not-Reachable":       "green",
+}
+
+BANNER = r"""[bold cyan]
+  ____                        _     _ _
+ |  _ \ _ __ __ _  ___  ___(_) __| (_)_   _ _ __ ___
+ | |_) | '__/ _` |/ _ \/ __| |/ _` | | | | | '_ ` _ \
+ |  __/| | | (_| |  __/\__ \ | (_| | | |_| | | | | | |
+ |_|   |_|  \__,_|\___||___/_|\__,_|_|\__,_|_| |_| |_|
+[/bold cyan]"""
+
+TAGLINE = "[dim]Dynamic CVE Reachability Confirmation Engine[/dim]"
+
+
+def _render_banner():
+    """Print the ASCII banner."""
+    console.print(BANNER, highlight=False)
+    console.print(f"  {TAGLINE}    [dim]v0.2.1[/dim]\n", highlight=False)
+
+
+def _render_result_panel(result: EngineOutput):
+    """Render a single CVE result as a rich Panel."""
+    label = result.label
+    border = BORDER_STYLES.get(label, "white")
+    icon = ICONS.get(label, "")
+
+    # ── Build body content ──
+    body_parts = []
+
+    # Static path
+    if result.static_path:
+        path_chain = " [dim]→[/dim] ".join(f"[bold]{s}[/bold]" for s in result.static_path)
+        body_parts.append(f"[dim]Static Path:[/dim]  {path_chain}")
+    else:
+        body_parts.append("[dim]Static Path:[/dim]  [dim italic]No path found[/dim italic]")
+
+    # Hypothesis attempts
+    if result.hypothesis_attempts:
+        body_parts.append("")
+        body_parts.append(f"[dim]Hypothesis Attempts ({len(result.hypothesis_attempts)}):[/dim]")
+        for i, attempt in enumerate(result.hypothesis_attempts, 1):
+            # Truncate long attempts for display
+            short = attempt[:200] + "…" if len(attempt) > 200 else attempt
+            body_parts.append(f"  [dim]{i}.[/dim] {short}")
+
+    # Trace
+    body_parts.append("")
+    body_parts.append("[dim]Trace:[/dim]")
+    for step in result.trace:
+        stage_color = {
+            "static": "cyan",
+            "hypothesis": "magenta",
+            "dynamic": "blue",
+            "decide": "white",
+        }.get(step.stage, "white")
+        body_parts.append(f"  [{stage_color}][{step.stage}][/{stage_color}] {step.detail}")
+
+    body = "\n".join(body_parts)
+
+    title = f"{result.cve_id}  {icon}"
+    subtitle = f"[{COLORS.get(label, 'white')}]{label}[/{COLORS.get(label, 'white')}]"
+
+    console.print(Panel(
+        body,
+        title=title,
+        subtitle=subtitle,
+        border_style=border,
+        padding=(1, 2),
+        expand=True,
+    ))
+
+
+def _render_summary(results: list[Optional[EngineOutput]]):
+    """Render a summary table of all results."""
+    confirmed = sum(1 for r in results if r and r.label == "Confirmed-Reachable")
+    static_only = sum(1 for r in results if r and r.label == "Static-Match-Only")
+    not_reachable = sum(1 for r in results if r and r.label == "Not-Reachable")
+    errors = sum(1 for r in results if r is None)
+
+    console.print()
+    console.print(Rule("[bold]Summary[/bold]", style="cyan"))
+    console.print()
+
+    # Stats line
+    stats = Text()
+    stats.append(f"  Total: {len(results)}   ")
+    stats.append(f"Critical: {confirmed}", style="bold red")
+    stats.append("   ")
+    stats.append(f"Warning: {static_only}", style="bold yellow")
+    stats.append("   ")
+    stats.append(f"Safe: {not_reachable}", style="bold green")
+    if errors:
+        stats.append("   ")
+        stats.append(f"Errors: {errors}", style="bold red")
+    console.print(stats)
+    console.print()
+
+    # Results table
+    table = Table(
+        box=box.ROUNDED,
+        border_style="dim",
+        header_style="bold cyan",
+        show_lines=True,
+        expand=True,
+    )
+    table.add_column("CVE ID", style="bold", ratio=2)
+    table.add_column("Label", justify="center", ratio=2)
+    table.add_column("Static Path", justify="center", ratio=1)
+    table.add_column("Status", justify="center", ratio=1)
+
+    for result in results:
+        if result is None:
+            table.add_row("[dim]—[/dim]", "[dim]Error[/dim]", "—", "[red]✘[/red]")
+            continue
+
+        label = result.label
+        label_styled = f"[{COLORS.get(label, 'white')}]{label}[/{COLORS.get(label, 'white')}]"
+        has_path = "[green]Yes[/green]" if result.static_path else "[dim]No[/dim]"
+        icon = ICONS.get(label, "")
+
+        table.add_row(result.cve_id, label_styled, has_path, icon)
+
+    console.print(table)
+    console.print()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CLI Commands
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @click.group()
-@click.version_option(version="0.1.0", prog_name="praesidium")
+@click.version_option(version="0.2.1", prog_name="praesidium")
 def main():
     """Praesidium — Dynamic CVE reachability confirmation engine"""
     pass
@@ -114,19 +267,21 @@ def check(
             flask_app_import=flask_app_import,
         )
     else:
-        click.echo(
-            "Error: Must provide either --cve-config or all of: "
+        console.print(
+            "[red]Error:[/red] Must provide either --cve-config or all of: "
             "--cve-id, --flagged-function, --flagged-module, --flagged-file",
-            err=True,
         )
         sys.exit(1)
 
     # Run the pipeline
     try:
         result = run_pipeline(target, str(target_app_root))
-        _output_result(result, output)
+        if output == "json":
+            click.echo(result.model_dump_json(indent=2))
+        else:
+            _render_result_panel(result)
     except Exception as e:
-        click.echo(f"Error running pipeline: {e}", err=True)
+        console.print(f"[red]Error running pipeline:[/red] {e}")
         sys.exit(1)
 
 
@@ -137,47 +292,8 @@ def _load_cve_config(config_path: Path) -> CVETarget:
             data = json.load(f)
         return CVETarget.model_validate(data)
     except Exception as e:
-        click.echo(f"Error loading config file: {e}", err=True)
+        console.print(f"[red]Error loading config file:[/red] {e}")
         sys.exit(1)
-
-
-def _output_result(result: EngineOutput, format: str):
-    """Output the result in the specified format."""
-    if format == "json":
-        click.echo(result.model_dump_json(indent=2))
-    else:
-        # Text format
-        click.echo(f"\n{'='*60}")
-        click.echo(f"CVE ID: {result.cve_id}")
-        click.echo(f"Label: {click.style(result.label, fg=_get_label_color(result.label), bold=True)}")
-        click.echo(f"{'='*60}\n")
-
-        if result.static_path:
-            click.echo("Static Analysis Path:")
-            for step in result.static_path:
-                click.echo(f"  → {step}")
-            click.echo()
-
-        if result.hypothesis_attempts:
-            click.echo(f"Hypothesis Attempts ({len(result.hypothesis_attempts)}):")
-            for i, attempt in enumerate(result.hypothesis_attempts, 1):
-                click.echo(f"  {i}. {attempt}")
-            click.echo()
-
-        click.echo("Trace:")
-        for step in result.trace:
-            click.echo(f"  [{step.stage}] {step.detail}")
-        click.echo()
-
-
-def _get_label_color(label: str) -> str:
-    """Get color for label output."""
-    if label == "Confirmed-Reachable":
-        return "red"
-    elif label == "Static-Match-Only":
-        return "yellow"
-    else:
-        return "green"
 
 
 @main.command()
@@ -208,9 +324,9 @@ def init_config(output_file: Path):
     with open(output_file, "w") as f:
         json.dump(sample_config, f, indent=2)
 
-    click.echo(f"Sample configuration written to {output_file}")
-    click.echo("Edit this file with your CVE details and run:")
-    click.echo(f"  praesidium check /path/to/app --cve-config {output_file}")
+    console.print(f"[green]✔[/green] Sample configuration written to [bold]{output_file}[/bold]")
+    console.print("Edit this file with your CVE details and run:")
+    console.print(f"  [cyan]praesidium check /path/to/app --cve-config {output_file}[/cyan]")
 
 
 @main.command()
@@ -248,30 +364,29 @@ def fetch(target_app_root: Path, output: Path, include_no_cve: bool, verbose: bo
     from OSV.dev, writing a draft CVE manifest.
     ...
     """
-    click.echo(f"Scanning dependencies in {target_app_root}...")
+    console.print(f"[cyan]Scanning dependencies in[/cyan] {target_app_root}...")
     deps = get_project_dependencies(target_app_root)
     if not deps:
-        click.echo(
-            "No dependencies found (no uv.lock, and no pyproject.toml with dependencies).",
-            err=True,
+        console.print(
+            "[red]No dependencies found[/red] (no uv.lock, and no pyproject.toml with dependencies).",
         )
         sys.exit(1)
 
     resolved = [d for d in deps if d.version]
     unresolved = len(deps) - len(resolved)
-    click.echo(
-        f"Found {len(deps)} dependencies ({len(resolved)} with a resolvable version"
-        + (f", {unresolved} skipped -- no version found)" if unresolved else ")")
+    console.print(
+        f"Found [bold]{len(deps)}[/bold] dependencies ([bold]{len(resolved)}[/bold] with a resolvable version"
+        + (f", {unresolved} skipped — no version found)" if unresolved else ")")
     )
-    click.echo("Querying OSV.dev for known vulnerabilities (this can take a moment)...")
+    console.print("[cyan]Querying OSV.dev for known vulnerabilities...[/cyan]")
 
     raw_results = fetch_cves_for_dependencies(resolved, verbose=verbose)
 
     n_no_cve = sum(1 for r in raw_results if r["cve_id"] is None and r["osv_id"])
     if n_no_cve and not include_no_cve:
-        click.echo(
-            f"Note: OSV returned {n_no_cve} advisory(ies) with no CVE id assigned "
-            "(re-run with --include-no-cve to keep them, using the OSV/GHSA id instead)."
+        console.print(
+            f"[dim]Note: OSV returned {n_no_cve} advisory(ies) with no CVE id assigned "
+            "(re-run with --include-no-cve to keep them).[/dim]"
         )
 
     manifest = []
@@ -292,7 +407,7 @@ def fetch(target_app_root: Path, output: Path, include_no_cve: bool, verbose: bo
 
         if locate and r.get("references"):
             if verbose:
-                click.echo(f"  Locating {display_id} ({r['package']})...", err=True)
+                console.print(f"  [dim]Locating {display_id} ({r['package']})...[/dim]", highlight=False)
             loc = locate_vulnerable_function(
                 cve_id=display_id,
                 package=r["package"],
@@ -306,7 +421,7 @@ def fetch(target_app_root: Path, output: Path, include_no_cve: bool, verbose: bo
                 flagged_function = loc.flagged_function
                 locate_note = f" [auto-located: {loc.reasoning}]"
             elif verbose:
-                click.echo(f"    not confident: {loc.reasoning}", err=True)
+                console.print(f"    [dim]not confident: {loc.reasoning}[/dim]", highlight=False)
 
         manifest.append({
             "cve_id": display_id,
@@ -326,15 +441,15 @@ def fetch(target_app_root: Path, output: Path, include_no_cve: bool, verbose: bo
 
     auto_located = sum(1 for m in manifest if "REPLACE_ME" not in m["flagged_function"])
     if locate:
-        click.echo(f"  {auto_located}/{len(manifest)} auto-located with high confidence")
+        console.print(f"  [green]{auto_located}/{len(manifest)}[/green] auto-located with high confidence")
 
-    click.echo(f"\nWrote {len(manifest)} CVE entries to {output}")
+    console.print(f"\n[green]✔[/green] Wrote [bold]{len(manifest)}[/bold] CVE entries to [bold]{output}[/bold]")
     if manifest:
-        click.echo(
-            "Review flagged_function / flagged_module / flagged_file (especially any "
-            "still marked REPLACE_ME) and fill in entry_points, then run:"
+        console.print(
+            "[dim]Review flagged_function / flagged_module / flagged_file (especially any "
+            "still marked REPLACE_ME) and fill in entry_points, then run:[/dim]"
         )
-        click.echo(f"  praesidium run --cves {output}")
+        console.print(f"  [cyan]praesidium run --cves {output}[/cyan]")
 
 
 @main.group()
@@ -361,12 +476,12 @@ def set_api_key(api_key: str, env_file: Path):
     # Create .env file if it doesn't exist
     if not env_file.exists():
         env_file.touch()
-        click.echo(f"Created {env_file}")
+        console.print(f"[dim]Created {env_file}[/dim]")
 
     # Set the key
     set_key(str(env_file), "GROQ_API_KEY", api_key)
-    click.echo(f"[OK] API key saved to {env_file}")
-    click.echo("You can now run CVE checks without setting the environment variable manually.")
+    console.print(f"[green]✔[/green] API key saved to [bold]{env_file}[/bold]")
+    console.print("[dim]You can now run CVE checks without setting the environment variable manually.[/dim]")
 
 
 @config.command(name="show")
@@ -384,21 +499,21 @@ def show_config(env_file: Path):
         praesidium config show
     """
     if not env_file.exists():
-        click.echo(f"No configuration file found at {env_file}")
+        console.print(f"[yellow]No configuration file found at {env_file}[/yellow]")
         return
 
     load_dotenv(str(env_file))
     api_key = os.getenv("GROQ_API_KEY")
 
-    click.echo(f"\nConfiguration from {env_file}:")
-    click.echo("=" * 50)
+    console.print(f"\n[bold]Configuration[/bold] [dim]from {env_file}[/dim]")
+    console.print(Rule(style="dim"))
     if api_key:
         # Mask the API key for security
         masked_key = api_key[:8] + "*" * (len(api_key) - 12) + api_key[-4:] if len(api_key) > 12 else "***"
-        click.echo(f"GROQ_API_KEY: {masked_key}")
+        console.print(f"  GROQ_API_KEY: [green]{masked_key}[/green]")
     else:
-        click.echo("GROQ_API_KEY: Not set")
-    click.echo("=" * 50)
+        console.print("  GROQ_API_KEY: [red]Not set[/red]")
+    console.print(Rule(style="dim"))
 
 
 @main.command()
@@ -457,10 +572,10 @@ def run(cves: Path, target: Path, output: str, summary: bool):
             cves_data = json.load(f)
 
         if not isinstance(cves_data, list):
-            click.echo("Error: CVEs file must contain a JSON array of CVE configurations", err=True)
+            console.print("[red]Error:[/red] CVEs file must contain a JSON array of CVE configurations")
             sys.exit(1)
     except Exception as e:
-        click.echo(f"Error loading CVEs file: {e}", err=True)
+        console.print(f"[red]Error loading CVEs file:[/red] {e}")
         sys.exit(1)
 
     # Validate and parse CVE targets
@@ -470,7 +585,7 @@ def run(cves: Path, target: Path, output: str, summary: bool):
             target_obj = CVETarget.model_validate(cve_data)
             targets.append(target_obj)
         except Exception as e:
-            click.echo(f"Error parsing CVE at index {i}: {e}", err=True)
+            console.print(f"[red]Error parsing CVE at index {i}:[/red] {e}")
             sys.exit(1)
 
     # Run analysis on all CVEs
@@ -478,23 +593,26 @@ def run(cves: Path, target: Path, output: str, summary: bool):
     target_path = str(target.resolve())
 
     if output == "text" and not summary:
-        click.echo(f"\n{'='*60}")
-        click.echo(f"Running Praesidium analysis on {len(targets)} CVE(s)")
-        click.echo(f"Target: {target_path}")
-        click.echo(f"{'='*60}\n")
+        _render_banner()
+        console.print(f"  [dim]Target:[/dim]  [bold]{target_path}[/bold]")
+        console.print(f"  [dim]CVEs:[/dim]    [bold]{len(targets)}[/bold] loaded from [bold]{cves}[/bold]")
+        console.print()
+        console.print(Rule(style="dim"))
+        console.print()
 
     for i, target_obj in enumerate(targets, 1):
         try:
             if output == "text" and not summary:
-                click.echo(f"[{i}/{len(targets)}] Analyzing {target_obj.cve_id}...")
+                console.print(f"  [cyan]▸[/cyan] [{i}/{len(targets)}] Analyzing [bold]{target_obj.cve_id}[/bold]...")
 
             result = run_pipeline(target_obj, target_path)
             results.append(result)
 
             if output == "text" and not summary:
-                _output_result(result, "text")
+                console.print()
+                _render_result_panel(result)
         except Exception as e:
-            click.echo(f"Error analyzing {target_obj.cve_id}: {e}", err=True)
+            console.print(f"[red]Error analyzing {target_obj.cve_id}:[/red] {e}")
             results.append(None)
 
     # Output results
@@ -502,39 +620,7 @@ def run(cves: Path, target: Path, output: str, summary: bool):
         json_results = [r.model_dump() if r else None for r in results]
         click.echo(json.dumps(json_results, indent=2))
     elif summary or len(targets) > 1:
-        _output_summary(results)
-
-
-def _output_summary(results: list[Optional[EngineOutput]]):
-    """Output a summary table of results."""
-    click.echo(f"\n{'='*80}")
-    click.echo("SUMMARY")
-    click.echo(f"{'='*80}")
-
-    confirmed = sum(1 for r in results if r and r.label == "Confirmed-Reachable")
-    static_only = sum(1 for r in results if r and r.label == "Static-Match-Only")
-    not_reachable = sum(1 for r in results if r and r.label == "Not-Reachable")
-    errors = sum(1 for r in results if r is None)
-
-    click.echo(f"\nTotal CVEs analyzed: {len(results)}")
-    click.echo(f"  {click.style('Confirmed-Reachable:', fg='red')} {confirmed}")
-    click.echo(f"  {click.style('Static-Match-Only:', fg='yellow')} {static_only}")
-    click.echo(f"  {click.style('Not-Reachable:', fg='green')} {not_reachable}")
-    if errors > 0:
-        click.echo(f"  {click.style('Errors:', fg='red')} {errors}")
-
-    click.echo(f"\n{'CVE ID':<20} {'Label':<25} {'Static Path'}")
-    click.echo("-" * 80)
-
-    for result in results:
-        if result is None:
-            continue
-
-        label_colored = click.style(result.label, fg=_get_label_color(result.label))
-        has_path = "Yes" if result.static_path else "No"
-        click.echo(f"{result.cve_id:<20} {label_colored:<33} {has_path}")
-
-    click.echo(f"{'='*80}\n")
+        _render_summary(results)
 
 
 if __name__ == "__main__":

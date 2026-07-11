@@ -22,7 +22,10 @@ def static_check_node(state: ReachState) -> ReachState:
 
     found_path = None
     matched_entry = None
-    for entry in target.entry_points:
+    # If no entry points specified (e.g. from fetch output), auto-discover
+    # by trying every function in the call graph as a potential start.
+    entry_candidates = target.entry_points or list(graph.functions.keys())
+    for entry in entry_candidates:
         path = graph.find_path(entry, flagged_qualname)
         if path:
             found_path, matched_entry = path, entry
