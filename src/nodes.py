@@ -7,7 +7,7 @@ wiring itself is in pipeline.py.
 """
 from __future__ import annotations
 
-from .dynamic_harness import EntryPointDriver, entry_point_param_names, patch_flagged_function
+from .dynamic_harness import EntryPointDriver, entry_point_param_names, patch_flagged_function, InvocationLog
 from .graph_builder import build_graph
 from .hypothesis import generate_hypothesis
 from .schemas import ReachState, TraceStep
@@ -112,6 +112,33 @@ def dynamic_confirm_node(state: ReachState) -> ReachState:
             trace.append(TraceStep(stage="dynamic", detail=f"Driver raised (not itself conclusive): {exc}"))
 
     trace.append(TraceStep(stage="dynamic", detail=f"Flagged function fired: {log.fired}"))
+
+    def _input_survived_intact(hypothesis_input: dict, log: InvocationLog) -> bool:
+        """Cheap fidelity check: did the values we hypothesized actually reach
+        the flagged function unmodified, or did something upstream sanitize/
+        escape/truncate them before the call? A function firing with a
+        neutered payload is a different (weaker) signal than firing with the
+        exact malicious input intact."""
+        if not log.call_kwargs:
+            return False
+        observed = log.call_kwargs[-1]  # most recent call
+        for key, expected in hypothesis_input.items():
+            actual = observed.get(key)
+            if isinstance(expected, str) and isinstance(actual, str):
+                if expected not in actual and actual not in expected:
+                    return False
+            elif actual != expected:
+                return False
+        return True
+
+    intact = log.fired and _input_survived_intact(hyp.hypothesis_input, log)
+    if log.fired and not intact:
+        trace.append(TraceStep(
+            stage="dynamic",
+            detail="Flagged function fired, but the hypothesized payload was "
+                   "altered before it arrived — possible sanitization upstream. "
+                   "Treating as weak signal, not full confirmation.",
+        ))
 
     return {
         **state,

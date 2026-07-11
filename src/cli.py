@@ -19,6 +19,9 @@ from dotenv import load_dotenv, set_key, find_dotenv
 from .pipeline import run_pipeline
 from .schemas import CVETarget, EngineOutput
 
+from .cve_fetcher import fetch_cves_for_dependencies
+from .dependency_scanner import get_project_dependencies
+
 # Load environment variables
 load_dotenv()
 
@@ -207,6 +210,96 @@ def init_config(output_file: Path):
     click.echo(f"Sample configuration written to {output_file}")
     click.echo("Edit this file with your CVE details and run:")
     click.echo(f"  praesidium check /path/to/app --cve-config {output_file}")
+
+
+@main.command()
+@click.argument(
+    "target_app_root",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=".",
+)
+@click.option(
+    "-o", "--output",
+    type=click.Path(path_type=Path),
+    default=Path("cves.json"),
+    help="Where to write the fetched CVE manifest (default: cves.json)",
+)
+@click.option(
+    "--include-no-cve",
+    is_flag=True,
+    help="Also include OSV advisories with no assigned CVE ID (uses the OSV id instead)",
+)
+@click.option(
+    "-v", "--verbose",
+    is_flag=True,
+    help="Print per-package OSV query results, to distinguish 'genuinely clean' from errors",
+)
+def fetch(target_app_root: Path, output: Path, include_no_cve: bool, verbose: bool):
+    """
+    Scan the target project's dependencies and fetch known CVEs for them
+    from OSV.dev, writing a draft CVE manifest.
+    ...
+    """
+    click.echo(f"Scanning dependencies in {target_app_root}...")
+    deps = get_project_dependencies(target_app_root)
+    if not deps:
+        click.echo(
+            "No dependencies found (no uv.lock, and no pyproject.toml with dependencies).",
+            err=True,
+        )
+        sys.exit(1)
+
+    resolved = [d for d in deps if d.version]
+    unresolved = len(deps) - len(resolved)
+    click.echo(
+        f"Found {len(deps)} dependencies ({len(resolved)} with a resolvable version"
+        + (f", {unresolved} skipped -- no version found)" if unresolved else ")")
+    )
+    click.echo("Querying OSV.dev for known vulnerabilities (this can take a moment)...")
+
+    raw_results = fetch_cves_for_dependencies(resolved, verbose=verbose)
+
+    n_no_cve = sum(1 for r in raw_results if r["cve_id"] is None and r["osv_id"])
+    if n_no_cve and not include_no_cve:
+        click.echo(
+            f"Note: OSV returned {n_no_cve} advisory(ies) with no CVE id assigned "
+            "(re-run with --include-no-cve to keep them, using the OSV/GHSA id instead)."
+        )
+
+    manifest = []
+    seen_ids = set()
+    for r in raw_results:
+        cve_id = r["cve_id"]
+        if cve_id is None and not include_no_cve:
+            continue
+        display_id = cve_id or r["osv_id"] or "UNKNOWN"
+        if display_id in seen_ids:
+            continue
+        seen_ids.add(display_id)
+
+        manifest.append({
+            "cve_id": display_id,
+            "flagged_function": "REPLACE_ME  # e.g. ClassName.method_name",
+            "flagged_module": "REPLACE_ME  # e.g. app.services.module_name",
+            "flagged_file": "REPLACE_ME  # e.g. app/services/module_name.py",
+            "entry_points": [],
+            "advisory_summary": f"[{r['package']}=={r['version']}] {r['summary']}",
+            "function_signature": None,
+            "driver_kind": "callable",
+            "flask_app_import": None,
+            "entry_point_routes": {},
+        })
+
+    with open(output, "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    click.echo(f"\nWrote {len(manifest)} CVE entries to {output}")
+    if manifest:
+        click.echo(
+            "Edit each entry's flagged_function / flagged_module / flagged_file / "
+            "entry_points, then run:"
+        )
+        click.echo(f"  praesidium run --cves {output}")
 
 
 @main.group()
